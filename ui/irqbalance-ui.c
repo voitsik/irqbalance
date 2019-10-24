@@ -91,7 +91,10 @@ void send_settings(char *data)
 	iov.iov_base = (void *) data;
 	iov.iov_len = strlen(data);
 	msg->msg_iov = &iov;
-	sendmsg(socket_fd, msg, 0);
+	if(sendmsg(socket_fd, msg, 0) != (ssize_t)iov.iov_len){
+		perror("sendmsg");
+		exit(1);
+	}
 
 	close(socket_fd);
 	free(msg->msg_control);
@@ -103,6 +106,13 @@ char * get_data(char *string)
 	/* Send "setup" to get sleep interval, banned IRQs and banned CPUs,
 	 * "stats" to get CPU tree statistics
 	 */
+	ssize_t len;
+	size_t bytes_read = 0;
+	const size_t chunk_size = 8192;
+	char *data = NULL;
+
+	fd_set rset;
+
 	int socket_fd = init_connection();
 	if(!socket_fd) {
 		return NULL;
@@ -113,17 +123,46 @@ char * get_data(char *string)
 	iov.iov_base = (void *) string;
 	iov.iov_len = strlen(string);
 	msg->msg_iov = &iov;
-	sendmsg(socket_fd, msg, 0);
+	if(sendmsg(socket_fd, msg, 0) != (ssize_t)iov.iov_len){
+		perror("sendmsg");
+		return NULL;
+	}
+
+	FD_ZERO(&rset);
+	FD_SET(socket_fd, &rset);
+
+	if(select(socket_fd+1, &rset, NULL, NULL, NULL) < 0){
+		perror("select");
+		exit(1);
+	}
+
+	if(FD_ISSET(socket_fd, &rset)){
+		do{
+			/* plus one byte for trailing zero */
+			data = realloc(data, bytes_read + chunk_size + 1);
+
+			len = recv(socket_fd, &data[bytes_read], chunk_size, 0);
+			if(len < 0){
+				perror("recv");
+				exit(1);
+			}
+
+			bytes_read += len;
+		}while(len == chunk_size);
+		data[bytes_read] = 0;
+	}
 
 	/*
 	 * This is just...horrible.  Mental note to replace this
 	 * With a select, ioctl to determine size, and malloc based
 	 * on that
 	 */
+	/*
 	char *data = malloc(8192);
 	int len = recv(socket_fd, data, 8192, 0);
 	close(socket_fd);
 	data[len] = '\0';
+	*/
 	free(msg->msg_control);
 	free(msg);
 	return data;
